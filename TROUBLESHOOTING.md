@@ -107,6 +107,84 @@ curl -N "$SERVICE_URL/sse"
 # 3. ヘルスチェック失敗 → /health エンドポイント確認
 ```
 
+#### 問題: n8n MCP 接続エラー "Could not connect to your MCP server"
+
+**症状**: n8nでMCPサーバーへの接続時に500エラーが発生
+
+**原因と解決策**:
+
+1. **missing `/rest/dynamic-node-parameters/options` エンドポイント**
+```bash
+# 確認方法
+curl -X POST "$SERVICE_URL/rest/dynamic-node-parameters/options" \
+  -H "Content-Type: application/json" -d '{}'
+
+# 正常な場合: ツールリストのJSONが返される
+```
+
+2. **SSE メッセージ処理の404エラー**
+```bash
+# ログ確認
+gcloud run services logs read playwright-mcp-minimal \
+  --region=us-central1 \
+  --format="value(timestamp,textPayload)" \
+  | grep -E "(POST.*messages|404)"
+
+# よくあるエラー:
+# POST 404 /messages?sessionId=xxx
+```
+
+**修正が必要なファイル**: `src/sseServer.ts`
+
+**必要な修正内容**:
+1. **動的パラメータエンドポイントの追加**:
+```typescript
+// Dynamic node parameters endpoint (for n8n)
+this.app.post('/rest/dynamic-node-parameters/options', async (req, res) => {
+  const tools = [
+    { name: 'playwright_navigate', value: 'playwright_navigate', description: 'Navigate to a URL' },
+    { name: 'playwright_screenshot', value: 'playwright_screenshot', description: 'Take a screenshot' },
+    // ... 他のツール
+  ];
+  res.json({ options: tools });
+});
+```
+
+2. **SSE メッセージ処理の修正**:
+```typescript
+// /messages エンドポイントでhandlePostMessageを使用
+await transport.handlePostMessage(req, res);
+```
+
+3. **CORS設定の改善**:
+```typescript
+res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+res.header('Access-Control-Allow-Credentials', 'true');
+```
+
+4. **詳細ログの追加**:
+```typescript
+console.log(`Messages endpoint called with sessionId: ${sessionId}`);
+console.log(`Active transports: ${Object.keys(this.transports).join(', ')}`);
+```
+
+**デプロイ手順**:
+```bash
+# ビルド
+npm run build
+
+# デプロイ
+./deploy.sh
+
+# 接続テスト
+curl -X POST "$SERVICE_URL/test-connection" -H "Content-Type: application/json" -d '{}'
+```
+
+**n8n設定**:
+- URL: `https://playwright-mcp-minimal-nzfsbenaoq-uc.a.run.app/sse`
+- 認証: 無効化
+- プロトコル: SSE
+
 ### 5. コスト関連
 
 #### 問題: 想定より高いコスト
